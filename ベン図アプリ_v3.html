@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ベン図塗りつぶしアプリ（タブ版）</title>
+  <style>
+    body{font-family:"Helvetica Neue",Arial,sans-serif;margin:0;padding:0;display:flex;background:#f7f7f7}
+    
+    /* タブコンテナ */
+    #tabContainer{
+      width:200px;
+      background:#fff;
+      border-right:1px solid #ccc;
+      min-height:100vh;
+      padding:20px 0;
+    }
+    
+    /* タブボタン */
+    .tab-button{
+      display:block;
+      width:100%;
+      padding:15px 20px;
+      border:none;
+      background:#f9f9f9;
+      text-align:left;
+      cursor:pointer;
+      font-size:14px;
+      color:#333;
+      border:1px solid #ddd;
+      border-bottom:1px solid #ddd;
+      transition:all .25s;
+    }
+    
+    .tab-button:hover{
+      background:#f0f0f0;
+      border-color:#ccc;
+    }
+    
+    .tab-button.active{
+      background:#4caf50;
+      color:#fff;
+      border-color:#4caf50;
+      font-weight:500;
+    }
+    
+    /* メインコンテンツ */
+    #mainContent{
+      flex:1;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+    }
+    
+    /* ページタイトルのフォントサイズを大きく */
+    h2{margin-top:12px;font-size:24px}
+    #toolbar{margin:12px 0;display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
+    button{padding:8px 20px;border:none;border-radius:8px;font-size:14px;cursor:pointer;background:#4caf50;color:#fff;transition:background .25s}
+    button:hover{background:#45a049}
+    #canvasWrapper{position:relative;width:640px;height:480px;background:#fff;border:1px solid #ccc;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,.08)}
+    canvas{width:640px;height:480px;display:block;}
+    
+    /* タブページの表示/非表示 */
+    .tab-page{display:none;}
+    .tab-page.active{display:flex;flex-direction:column;align-items:center;}
+    
+    /* 印刷用のスタイル */
+    @media print {
+      body {
+        margin: 0;
+        padding: 0;
+        background: none;
+      }
+      #tabContainer {
+        display: none;
+      }
+      #mainContent {
+        margin: 0;
+      }
+      h2, #toolbar {
+        display: none;
+      }
+      #canvasWrapper {
+        margin: 0;
+        padding: 0;
+        border: none;
+        box-shadow: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- タブコンテナ -->
+  <div id="tabContainer">
+    <button class="tab-button active" data-tab="page1">基本ベン図</button>
+    <button class="tab-button" data-tab="page2">全体集合U付き</button>
+  </div>
+
+  <!-- メインコンテンツ -->
+  <div id="mainContent">
+    <!-- ページ1: 基本ベン図 -->
+    <div id="page1" class="tab-page active">
+      <h2>ベン図塗りつぶしアプリ</h2>
+      <div id="toolbar1">
+        <button id="addBtn1">円を追加</button>
+        <button id="removeBtn1">円を削除</button>
+      </div>
+      <div id="canvasWrapper1">
+        <canvas id="vennCanvas1"></canvas>
+      </div>
+    </div>
+
+    <!-- ページ2: 全体集合U付き -->
+    <div id="page2" class="tab-page">
+      <h2>ベン図塗りつぶしアプリ（全体集合U付き）</h2>
+      <div id="toolbar2">
+        <button id="addBtn2">円を追加</button>
+        <button id="removeBtn2">円を削除</button>
+      </div>
+      <div id="canvasWrapper2">
+        <canvas id="vennCanvas2"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  /* === 基本設定 === */
+  const SCALE = 2;
+  const W_BASE = 640, H_BASE = 480, R_BASE = 100;
+  const FONT_L_BASE = 20;
+  const FONT_E_BASE = 22;
+  const PAD_BASE = 20;
+  const HATCH_INTERVAL_BASE = 10;
+  const HATCH_LINEWIDTH_BASE = 1;
+  const CIRCLE_LINEWIDTH_BASE = 2;
+  const EXPR_OVERLINE_OFFSET_BASE = 3;
+  const EXPR_TOP_MARGIN_BASE = 30;
+  const EXPR_MIN_Y_BASE = 25;
+  const EXPR_FALLBACK_ASCENT_BASE = 16;
+
+  const W = W_BASE * SCALE;
+  const H = H_BASE * SCALE;
+  const R = R_BASE * SCALE;
+  const MAX_CIRCLES = 3;
+  const VARS = ["A", "B", "C"];
+
+  const FONT_L = (FONT_L_BASE * SCALE) + "px Helvetica Neue";
+  const FONT_E = (FONT_E_BASE * SCALE) + "px Helvetica Neue";
+
+  /* === VennDiagramクラス === */
+  class VennDiagram {
+    constructor(canvasId, showUniversalSet = false) {
+      this.canvas = document.getElementById(canvasId);
+      this.canvas.width = W;
+      this.canvas.height = H;
+      this.ctx = this.canvas.getContext('2d');
+      this.showUniversalSet = showUniversalSet;
+      
+      this.circles = [];
+      this.selected = new Set();
+      
+      // 数式のドラッグ機能用の状態
+      this.exprPosition = null;
+      this.isDraggingExpr = false;
+      this.dragOffset = { x: 0, y: 0 };
+      
+      this.layouts = {
+        1: [{ x: 320 * SCALE, y: 240 * SCALE }],
+        2: [{ x: 270 * SCALE, y: 240 * SCALE }, { x: 370 * SCALE, y: 240 * SCALE }],
+        3: [{ x: 320 * SCALE, y: 170 * SCALE }, { x: 250 * SCALE, y: 290 * SCALE }, { x: 390 * SCALE, y: 290 * SCALE }]
+      };
+    }
+
+    applyLayout() {
+      const layoutDef = this.layouts[this.circles.length] || [];
+      this.circles.forEach((circle, i) => {
+        if (layoutDef[i]) {
+          Object.assign(circle, layoutDef[i], { r: R });
+        } else {
+          Object.assign(circle, { x: W / 2, y: H / 2, r: R });
+        }
+      });
+    }
+
+    dist(p1, p2) {
+      return Math.hypot(p1.x - p2.x, p1.y - p2.y);
+    }
+
+    regionCode(pt) {
+      let bits = "";
+      for (let i = 0; i < this.circles.length; i++) {
+        bits += this.dist(pt, this.circles[i]) < this.circles[i].r ? "1" : "0";
+      }
+      return bits.padEnd(MAX_CIRCLES, '0');
+    }
+
+    simplify(set) {
+      if (!set.size) return [];
+      
+      const canComb = (a, b) => {
+        let d = -1;
+        for (let i = 0; i < MAX_CIRCLES; i++) {
+          if (a[i] !== b[i]) {
+            if (a[i] === '-' || b[i] === '-') return false;
+            if (d !== -1) return false;
+            d = i;
+          }
+        }
+        return d !== -1;
+      };
+      
+      const comb = (a, b) => a.split('').map((ch, i) => ch === b[i] ? ch : '-').join('');
+      
+      let level = [...set], pr = [];
+      while (true) {
+        const used = new Set(), nxt = [];
+        for (let i = 0; i < level.length; i++) {
+          for (let j = i + 1; j < level.length; j++) {
+            if (canComb(level[i], level[j])) {
+              nxt.push(comb(level[i], level[j]));
+              used.add(i);
+              used.add(j);
+            }
+          }
+        }
+        level.forEach((t, i) => {
+          if (!used.has(i) && !pr.includes(t)) pr.push(t);
+        });
+        if (!nxt.length) break;
+        level = [...new Set(nxt)];
+      }
+      
+      const cov = (p, m) => p.split('').every((ch, i) => ch === '-' || ch === m[i]);
+      return pr.filter(p => !pr.some(q => q !== p && cov(q, p)));
+    }
+
+    fillRegion(code) {
+      const offscreenCanvas = document.createElement('canvas');
+      offscreenCanvas.width = W;
+      offscreenCanvas.height = H;
+      const oCtx = offscreenCanvas.getContext('2d');
+
+      oCtx.strokeStyle = '#000';
+      oCtx.lineWidth = HATCH_LINEWIDTH_BASE * SCALE;
+      const hatchInterval = HATCH_INTERVAL_BASE * SCALE;
+      for (let x = -H; x < W; x += hatchInterval) {
+        oCtx.beginPath();
+        oCtx.moveTo(x, 0);
+        oCtx.lineTo(x + H, H);
+        oCtx.stroke();
+      }
+
+      if (this.showUniversalSet) {
+        const margin = 30 * SCALE;
+        oCtx.globalCompositeOperation = 'destination-in';
+        oCtx.beginPath();
+        oCtx.rect(margin, margin, W - 2 * margin, H - 2 * margin);
+        oCtx.fill();
+      }
+
+      oCtx.globalCompositeOperation = 'destination-in';
+      code.split('').forEach((bit, i) => {
+        if (bit === '1' && i < this.circles.length) {
+          oCtx.beginPath();
+          oCtx.arc(this.circles[i].x, this.circles[i].y, this.circles[i].r, 0, Math.PI * 2);
+          oCtx.fill();
+        }
+      });
+
+      oCtx.globalCompositeOperation = 'destination-out';
+      code.split('').forEach((bit, i) => {
+        if (bit === '0' && i < this.circles.length) {
+          oCtx.beginPath();
+          oCtx.arc(this.circles[i].x, this.circles[i].y, this.circles[i].r, 0, Math.PI * 2);
+          oCtx.fill();
+        }
+      });
+
+      this.clearTextAreas(oCtx);
+      this.ctx.drawImage(offscreenCanvas, 0, 0);
+    }
+
+    clearTextAreas(oCtx) {
+      oCtx.globalCompositeOperation = 'destination-out';
+      
+      if (this.circles.length > 0) {
+        const primeArr = this.simplify(this.selected);
+        if (primeArr.length > 0) {
+          let textAreaInfo;
+          if (this.exprPosition) {
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.font = FONT_E;
+            
+            const sortedPrimes = [...primeArr].sort((a, b) => this.exprStringForSort(a).localeCompare(this.exprStringForSort(b)));
+            const tokens = [];
+            sortedPrimes.forEach((code, primeIndex) => {
+              const termTokens = [];
+              for (let i = 0; i < this.circles.length; i++) {
+                if (code[i] === '-') continue;
+                termTokens.push({ text: VARS[i], negation: code[i] === '0' });
+              }
+              termTokens.forEach((token, tokenIndex) => {
+                if (tokenIndex > 0) tokens.push({ text: '∩' });
+                tokens.push(token);
+              });
+              if (primeIndex < sortedPrimes.length - 1) tokens.push({ text: ' ∪ ' });
+            });
+            
+            if (tokens.length > 0) {
+              const tokenWidths = tokens.map(t => tempCtx.measureText(t.text).width);
+              const totalExprWidth = tokenWidths.reduce((sum, w) => sum + w, 0);
+              
+              textAreaInfo = {
+                x: this.exprPosition.x,
+                y: this.exprPosition.y - (FONT_E_BASE * SCALE) - (4 * SCALE),
+                width: totalExprWidth,
+                height: (FONT_E_BASE + 8) * SCALE
+              };
+            }
+          } else {
+            textAreaInfo = this.getExprTextArea(primeArr);
+          }
+          
+          if (textAreaInfo) {
+            const padding = 6 * SCALE;
+            oCtx.beginPath();
+            oCtx.rect(
+              textAreaInfo.x - padding,
+              textAreaInfo.y - padding,
+              textAreaInfo.width + 2 * padding,
+              textAreaInfo.height + 2 * padding
+            );
+            oCtx.fill();
+          }
+        }
+      }
+
+      this.circles.forEach((circle, i) => {
+        const { x: labelX, y: labelY, align: labelAlign } = this.labelPos(i);
+        
+        const tempCanvas = document.createElement('canvas');
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCtx.font = FONT_L;
+        const labelMetrics = tempCtx.measureText(circle.label);
+        const labelWidth = labelMetrics.width;
+        const labelHeight = FONT_L_BASE * SCALE;
+        const labelPadding = 6 * SCALE;
+        
+        let backgroundX;
+        if (labelAlign === 'center') {
+          backgroundX = labelX - labelWidth / 2;
+        } else if (labelAlign === 'right') {
+          backgroundX = labelX - labelWidth;
+        } else {
+          backgroundX = labelX;
+        }
+        const backgroundY = labelY - labelHeight / 2;
+        
+        oCtx.beginPath();
+        oCtx.rect(
+          backgroundX - labelPadding,
+          backgroundY - labelPadding,
+          labelWidth + 2 * labelPadding,
+          labelHeight + 2 * labelPadding
+        );
+        oCtx.fill();
+      });
+    }
+
+    labelPos(circleIndex) {
+      const circle = this.circles[circleIndex];
+      const padding = PAD_BASE * SCALE;
+      const radius = circle.r;
+
+      if (this.circles.length < 3) return { x: circle.x, y: circle.y - radius - padding, align: 'center' };
+      if (circleIndex === 0) return { x: circle.x, y: circle.y - radius - padding, align: 'center' };
+      if (circleIndex === 1) return { x: circle.x - radius - padding, y: circle.y, align: 'right' };
+      return { x: circle.x + radius + padding, y: circle.y, align: 'left' };
+    }
+
+    exprStringForSort(code) {
+      let s = "";
+      for (let i = 0; i < this.circles.length; i++) {
+        if (code[i] === '-') continue;
+        s += VARS[i];
+      }
+      return s;
+    }
+
+    drawExpr(primeArr) {
+      if (!primeArr.length || !this.circles.length) return;
+
+      const sortedPrimes = [...primeArr].sort((a, b) => this.exprStringForSort(a).localeCompare(this.exprStringForSort(b)));
+
+      const tokens = [];
+      sortedPrimes.forEach((code, primeIndex) => {
+        const termTokens = [];
+        for (let i = 0; i < this.circles.length; i++) {
+          if (code[i] === '-') continue;
+          termTokens.push({ text: VARS[i], negation: code[i] === '0' });
+        }
+        termTokens.forEach((token, tokenIndex) => {
+          if (tokenIndex > 0) tokens.push({ text: '∩' });
+          tokens.push(token);
+        });
+        if (primeIndex < sortedPrimes.length - 1) tokens.push({ text: ' ∪ ' });
+      });
+
+      if (!tokens.length) return;
+
+      this.ctx.font = FONT_E;
+      this.ctx.textBaseline = 'alphabetic';
+      this.ctx.textAlign = 'left';
+      this.ctx.fillStyle = '#000';
+
+      const tokenWidths = tokens.map(t => this.ctx.measureText(t.text).width);
+      const totalExprWidth = tokenWidths.reduce((sum, w) => sum + w, 0);
+
+      let exprY, centerXOverall;
+      
+      if (this.exprPosition) {
+        exprY = this.exprPosition.y;
+        centerXOverall = this.exprPosition.x + totalExprWidth / 2;
+      } else {
+        if (this.showUniversalSet) {
+          const universalSetMargin = 30 * SCALE;
+          const textMargin = 10 * SCALE;
+          exprY = universalSetMargin - textMargin;
+        } else {
+          const minYCircleEdge = Math.min(...this.circles.map(c => c.y - c.r));
+          let exprTopMargin = EXPR_TOP_MARGIN_BASE * SCALE;
+          if (this.circles.length === 3) {
+            exprTopMargin = (EXPR_TOP_MARGIN_BASE + 15) * SCALE;
+          }
+          exprY = Math.max(EXPR_MIN_Y_BASE * SCALE, minYCircleEdge - exprTopMargin);
+        }
+        
+        const minXCircleEdge = Math.min(...this.circles.map(c => c.x - c.r));
+        const maxXCircleEdge = Math.max(...this.circles.map(c => c.x + c.r));
+        centerXOverall = (minXCircleEdge + maxXCircleEdge) / 2;
+      }
+      
+      let currentX = centerXOverall - totalExprWidth / 2;
+
+      this.exprBounds = {
+        x: currentX,
+        y: exprY - (FONT_E_BASE * SCALE),
+        width: totalExprWidth,
+        height: (FONT_E_BASE + 8) * SCALE
+      };
+
+      this.ctx.lineWidth = (HATCH_LINEWIDTH_BASE) * SCALE;
+      this.ctx.strokeStyle = '#000';
+
+      tokens.forEach((token, i) => {
+        this.ctx.fillText(token.text, currentX, exprY);
+        if (token.negation) {
+          const metrics = this.ctx.measureText(token.text);
+          const ascent = metrics.actualBoundingBoxAscent || (EXPR_FALLBACK_ASCENT_BASE * SCALE);
+          const overlineY = exprY - ascent - (EXPR_OVERLINE_OFFSET_BASE * SCALE);
+          this.ctx.beginPath();
+          this.ctx.moveTo(currentX, overlineY);
+          this.ctx.lineTo(currentX + tokenWidths[i], overlineY);
+          this.ctx.stroke();
+        }
+        currentX += tokenWidths[i];
+      });
+    }
+
+    getExprTextArea(primeArr) {
+      if (!primeArr.length || !this.circles.length) return null;
+
+      const sortedPrimes = [...primeArr].sort((a, b) => this.exprStringForSort(a).localeCompare(this.exprStringForSort(b)));
+
+      const tokens = [];
+      sortedPrimes.forEach((code, primeIndex) => {
+        const termTokens = [];
+        for (let i = 0; i < this.circles.length; i++) {
+          if (code[i] === '-') continue;
+          termTokens.push({ text: VARS[i], negation: code[i] === '0' });
+        }
+        termTokens.forEach((token, tokenIndex) => {
+          if (tokenIndex > 0) tokens.push({ text: '∩' });
+          tokens.push(token);
+        });
+        if (primeIndex < sortedPrimes.length - 1) tokens.push({ text: ' ∪ ' });
+      });
+
+      if (!tokens.length) return null;
+
+      const tempCanvas = document.createElement('canvas');
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCtx.font = FONT_E;
+      const tokenWidths = tokens.map(t => tempCtx.measureText(t.text).width);
+      const totalExprWidth = tokenWidths.reduce((sum, w) => sum + w, 0);
+
+      let exprY, centerXOverall;
+      
+      if (this.exprPosition) {
+        exprY = this.exprPosition.y;
+        centerXOverall = this.exprPosition.x + totalExprWidth / 2;
+      } else {
+        if (this.showUniversalSet) {
+          const universalSetMargin = 30 * SCALE;
+          const textMargin = 10 * SCALE;
+          exprY = universalSetMargin - textMargin;
+        } else {
+          const minYCircleEdge = Math.min(...this.circles.map(c => c.y - c.r));
+          let exprTopMargin = EXPR_TOP_MARGIN_BASE * SCALE;
+          if (this.circles.length === 3) {
+            exprTopMargin = (EXPR_TOP_MARGIN_BASE + 15) * SCALE;
+          }
+          exprY = Math.max(EXPR_MIN_Y_BASE * SCALE, minYCircleEdge - exprTopMargin);
+        }
+        
+        const minXCircleEdge = Math.min(...this.circles.map(c => c.x - c.r));
+        const maxXCircleEdge = Math.max(...this.circles.map(c => c.x + c.r));
+        centerXOverall = (minXCircleEdge + maxXCircleEdge) / 2;
+      }
+      
+      const startX = centerXOverall - totalExprWidth / 2;
+      const textHeight = (FONT_E_BASE + 8) * SCALE;
+      const textY = exprY - (FONT_E_BASE * SCALE) - (4 * SCALE);
+
+      return {
+        x: startX,
+        y: textY,
+        width: totalExprWidth,
+        height: textHeight
+      };
+    }
+
+    drawUniversalSet() {
+      if (!this.showUniversalSet) return;
+      
+      const margin = 30 * SCALE;
+      const rectX = margin;
+      const rectY = margin;
+      const rectW = W - 2 * margin;
+      const rectH = H - 2 * margin;
+      
+      this.ctx.strokeStyle = '#000';
+      this.ctx.lineWidth = CIRCLE_LINEWIDTH_BASE * SCALE;
+      this.ctx.strokeRect(rectX, rectY, rectW, rectH);
+      
+      this.ctx.font = FONT_L;
+      this.ctx.textAlign = 'left';
+      this.ctx.textBaseline = 'top';
+      this.ctx.fillStyle = '#000';
+      this.ctx.fillText('U', rectX + 10 * SCALE, rectY + 10 * SCALE);
+    }
+
+    redraw() {
+      this.ctx.clearRect(0, 0, W, H);
+      
+      this.drawUniversalSet();
+      this.selected.forEach(code => this.fillRegion(code));
+
+      this.circles.forEach((circle, i) => {
+        this.ctx.beginPath();
+        this.ctx.arc(circle.x, circle.y, circle.r, 0, Math.PI * 2);
+        this.ctx.strokeStyle = '#000';
+        this.ctx.lineWidth = CIRCLE_LINEWIDTH_BASE * SCALE;
+        this.ctx.stroke();
+      });
+
+      this.drawExpr(this.simplify(this.selected));
+
+      this.circles.forEach((circle, i) => {
+        const { x: labelX, y: labelY, align: labelAlign } = this.labelPos(i);
+        this.ctx.font = FONT_L;
+        this.ctx.textAlign = labelAlign;
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillStyle = '#000';
+        this.ctx.fillText(circle.label, labelX, labelY);
+      });
+    }
+
+    handleClick(e) {
+      if (!this.circles.length) return;
+
+      const rect = this.canvas.getBoundingClientRect();
+      const clickX_display = e.clientX - rect.left;
+      const clickY_display = e.clientY - rect.top;
+
+      const scaleX = this.canvas.width / this.canvas.clientWidth;
+      const scaleY = this.canvas.height / this.canvas.clientHeight;
+      const pt = {
+        x: clickX_display * scaleX,
+        y: clickY_display * scaleY
+      };
+
+      if (this.exprBounds && this.isPointInExpr(pt)) {
+        return;
+      }
+
+      const margin = 30 * SCALE;
+      if (pt.x < margin || pt.x > W - margin || pt.y < margin || pt.y > H - margin) {
+        return;
+      }
+
+      const code = this.regionCode(pt);
+      if (this.selected.has(code)) {
+        this.selected.delete(code);
+      } else {
+        this.selected.add(code);
+      }
+      this.redraw();
+    }
+
+    isPointInExpr(pt) {
+      if (!this.exprBounds) return false;
+      return pt.x >= this.exprBounds.x && 
+             pt.x <= this.exprBounds.x + this.exprBounds.width &&
+             pt.y >= this.exprBounds.y && 
+             pt.y <= this.exprBounds.y + this.exprBounds.height;
+    }
+
+    handleMouseDown(e) {
+      const rect = this.canvas.getBoundingClientRect();
+      const clickX_display = e.clientX - rect.left;
+      const clickY_display = e.clientY - rect.top;
+
+      const scaleX = this.canvas.width / this.canvas.clientWidth;
+      const scaleY = this.canvas.height / this.canvas.clientHeight;
+      const pt = {
+        x: clickX_display * scaleX,
+        y: clickY_display * scaleY
+      };
+
+      if (this.exprBounds && this.isPointInExpr(pt)) {
+        this.isDraggingExpr = true;
+        if (!this.exprPosition) {
+          this.exprPosition = {
+            x: this.exprBounds.x,
+            y: this.exprBounds.y + (FONT_E_BASE * SCALE)
+          };
+        }
+        this.dragOffset = {
+          x: pt.x - this.exprPosition.x,
+          y: pt.y - this.exprPosition.y
+        };
+        this.canvas.style.cursor = 'grabbing';
+        e.preventDefault();
+      }
+    }
+
+    handleMouseMove(e) {
+      const rect = this.canvas.getBoundingClientRect();
+      const mouseX_display = e.clientX - rect.left;
+      const mouseY_display = e.clientY - rect.top;
+
+      const scaleX = this.canvas.width / this.canvas.clientWidth;
+      const scaleY = this.canvas.height / this.canvas.clientHeight;
+      const pt = {
+        x: mouseX_display * scaleX,
+        y: mouseY_display * scaleY
+      };
+
+      if (this.isDraggingExpr) {
+        this.exprPosition = {
+          x: pt.x - this.dragOffset.x,
+          y: pt.y - this.dragOffset.y
+        };
+        
+        const tempCanvas = document.createElement('canvas');
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCtx.font = FONT_E;
+        
+        const primeArr = this.simplify(this.selected);
+        if (primeArr.length > 0) {
+          const sortedPrimes = [...primeArr].sort((a, b) => this.exprStringForSort(a).localeCompare(this.exprStringForSort(b)));
+          const tokens = [];
+          sortedPrimes.forEach((code, primeIndex) => {
+            const termTokens = [];
+            for (let i = 0; i < this.circles.length; i++) {
+              if (code[i] === '-') continue;
+              termTokens.push({ text: VARS[i], negation: code[i] === '0' });
+            }
+            termTokens.forEach((token, tokenIndex) => {
+              if (tokenIndex > 0) tokens.push({ text: '∩' });
+              tokens.push(token);
+            });
+            if (primeIndex < sortedPrimes.length - 1) tokens.push({ text: ' ∪ ' });
+          });
+          
+          if (tokens.length > 0) {
+            const tokenWidths = tokens.map(t => tempCtx.measureText(t.text).width);
+            const totalExprWidth = tokenWidths.reduce((sum, w) => sum + w, 0);
+            
+            this.exprBounds = {
+              x: this.exprPosition.x,
+              y: this.exprPosition.y - (FONT_E_BASE * SCALE),
+              width: totalExprWidth,
+              height: (FONT_E_BASE + 8) * SCALE
+            };
+          }
+        }
+        
+        this.redraw();
+      } else {
+        if (this.exprBounds && this.isPointInExpr(pt)) {
+          this.canvas.style.cursor = 'grab';
+        } else {
+          this.canvas.style.cursor = 'default';
+        }
+      }
+    }
+
+    handleMouseUp(e) {
+      if (this.isDraggingExpr) {
+        this.isDraggingExpr = false;
+        this.canvas.style.cursor = 'default';
+      }
+    }
+
+    addCircle() {
+      if (this.circles.length >= MAX_CIRCLES) return;
+      this.circles.push({ label: VARS[this.circles.length] });
+      this.applyLayout();
+      this.selected.clear();
+      this.exprPosition = null;
+      this.redraw();
+    }
+
+    removeCircle() {
+      if (!this.circles.length) return;
+      this.circles.pop();
+      this.circles.forEach((circle, i) => circle.label = VARS[i]);
+      this.applyLayout();
+      this.selected.clear();
+      this.exprPosition = null;
+      this.redraw();
+    }
+  }
+
+  /* === インスタンス作成 === */
+  const venn1 = new VennDiagram('vennCanvas1', false);
+  const venn2 = new VennDiagram('vennCanvas2', true);
+
+  /* === タブ機能 === */
+  function switchTab(targetTab) {
+    document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.tab-page').forEach(page => page.classList.remove('active'));
+    
+    document.querySelector(`[data-tab="${targetTab}"]`).classList.add('active');
+    document.getElementById(targetTab).classList.add('active');
+    
+    if (targetTab === 'page1') {
+      venn1.redraw();
+    } else {
+      venn2.redraw();
+    }
+  }
+
+  /* === イベントリスナー === */
+  document.querySelectorAll('.tab-button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      switchTab(btn.dataset.tab);
+    });
+  });
+
+  document.getElementById('vennCanvas1').addEventListener('click', e => venn1.handleClick(e));
+  document.getElementById('vennCanvas1').addEventListener('mousedown', e => venn1.handleMouseDown(e));
+  document.getElementById('vennCanvas1').addEventListener('mousemove', e => venn1.handleMouseMove(e));
+  document.getElementById('vennCanvas1').addEventListener('mouseup', e => venn1.handleMouseUp(e));
+  document.getElementById('addBtn1').addEventListener('click', () => venn1.addCircle());
+  document.getElementById('removeBtn1').addEventListener('click', () => venn1.removeCircle());
+
+  document.getElementById('vennCanvas2').addEventListener('click', e => venn2.handleClick(e));
+  document.getElementById('vennCanvas2').addEventListener('mousedown', e => venn2.handleMouseDown(e));
+  document.getElementById('vennCanvas2').addEventListener('mousemove', e => venn2.handleMouseMove(e));
+  document.getElementById('vennCanvas2').addEventListener('mouseup', e => venn2.handleMouseUp(e));
+  document.getElementById('addBtn2').addEventListener('click', () => venn2.addCircle());
+  document.getElementById('removeBtn2').addEventListener('click', () => venn2.removeCircle());
+
+  /* === 初期化 === */
+  venn1.applyLayout();
+  venn1.redraw();
+  venn2.applyLayout();
+  venn2.redraw();
+  </script>
+</body>
+</html>
